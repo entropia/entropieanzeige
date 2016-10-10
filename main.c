@@ -14,11 +14,12 @@
 #include <unistd.h>
 #include <time.h>
 #include <inttypes.h>
+#include <stdlib.h>
 
 #define BUFSIZE 32
 
-char* ip = "unknown";
-char* port = "unknown";
+const char* ip = "unknown";
+in_port_t port;
 uint64_t counter = 0;
 
 struct timespec sleep_time = {
@@ -28,23 +29,22 @@ struct timespec sleep_time = {
 
 void* print_info(void* unused) {
 	for(;;){
-		printf("\e[5;0HUDP Pixelflut\nnc -u %s %s\npixels/s: %6" PRIu64, ip, port, counter*1000000000/((uint64_t)sleep_time.tv_nsec));
+		printf("\e[5;0HUDP Pixelflut\nnc -u %s %d\npixels/s: %6" PRIu64, ip, port, counter*1000000000/((uint64_t)sleep_time.tv_nsec));
 		counter = 0;
 		nanosleep(&sleep_time, NULL);
 	}
 	return NULL;
 }
 
-int main(int argc, char **argv) {
-	if(argc < 3){
-		printf("pass port and ip to be shown on command line");
+int main(const int argc, const char const * const * argv) {
+	if(argc < 2){
+		fprintf(stderr, "usage: %s <port>\n", argv[0]);
 		return 1;
 	} else {
-		ip = argv[1];
-		port = argv[2];
+		port = atoi(argv[1]);
 	}
-	int row, col, width, height, bitspp, bytespp;
-	unsigned int *data;
+	int width, height, bitspp, bytespp;
+	uint32_t *data;
 
 	// Öffnen des Gerätes
 	int fd = open("/dev/fb0", O_RDWR);
@@ -54,6 +54,7 @@ int main(int argc, char **argv) {
 	ioctl(fd, FBIOGET_VSCREENINFO, &screeninfo);
 
 	// Beende, wenn die Farbauflösung nicht 32 Bit pro Pixel entspricht
+	printf("Res: %ix%i, %i bpp\n", screeninfo.xres, screeninfo.yres, screeninfo.bits_per_pixel);
 	bitspp = screeninfo.bits_per_pixel;
 	if(bitspp != 32) {
 		// Ausgabe der Fehlermeldung
@@ -63,18 +64,9 @@ int main(int argc, char **argv) {
 		return 1; // Für den Programmabbruch geben wir einen Rückgabetyp != 0 aus.
 	}
 
-	printf("Res: %ix%i, %i bpp\n", screeninfo.xres, screeninfo.yres, screeninfo.bits_per_pixel);
-
 	width  = screeninfo.xres;
 	height = screeninfo.yres;
 	bytespp = bitspp/8; //Bytes pro Pixel berechnen
-
-	// Überprüfen ob der Typ unsigned int die gleiche Byte-Grösse wie ein Pixel besitzt.
-	// In unserem Fall 4 Byte (32 Bit), falls nicht wird das Programm beendet
-	if(sizeof(unsigned int) != bytespp) {
-		close(fd);
-		return 1;
-	}
 
 	// Zeiger auf den Framebufferspeicher anfordern
 	data = (unsigned int*) mmap(0, width * height * bytespp, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -82,12 +74,13 @@ int main(int argc, char **argv) {
 	const int udpsock = socket(AF_INET6, SOCK_DGRAM, 0);
 	struct sockaddr_in6 my_addr = {
 		.sin6_family = AF_INET6,
-		.sin6_port = htons(23421),
+		.sin6_port = htons(port),
 		.sin6_addr = IN6ADDR_ANY_INIT,
 	};
 	if(0 != bind(udpsock, (struct sockaddr*)&my_addr, sizeof(my_addr))) {
 		perror("Could not bind");
 	}
+	// TODO: getifaddr() benutzen
 	pthread_t print_info_thread;
 	pthread_create(&print_info_thread, NULL, print_info, NULL);
 	char buf[BUFSIZE];
@@ -106,7 +99,8 @@ int main(int argc, char **argv) {
 
 	// Zeiger wieder freigeben
 	munmap(data, width * height * bytespp);
-
+	// Socket schließen
+	close(udpsock);
 	// Gerät schließen
 	close(fd);
 	// Rückgabewert
