@@ -1,12 +1,18 @@
 CC=gcc
 LD=gcc
 
-CFLAGS=-Wall -O2 -std=c99 -D_POSIX_C_SOURCE=199309L
+CFLAGS=-Wall -O2 -std=c99 -D_POSIX_C_SOURCE=200112L -D_DEFAULT_SOURCE -g
 
 LDFLAGS=-lpthread
 
-pixelflut: main.o
-	$(LD) $(LDFLAGS) -o pixelflut $^
+pixelflut: pixelflut_g
+	strip $< -o $@
+
+pixelflut_g: main.o
+	$(LD) $(LDFLAGS) -o $@ $^
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+clean:
+	-rm -f pixelflut pixelflut_g *.o

@@ -15,12 +15,16 @@
 #include <time.h>
 #include <inttypes.h>
 #include <stdlib.h>
+#include <linux/if_link.h>
+#include <netdb.h>
+#include <ifaddrs.h>
+#include <string.h>
 
 #define BUFSIZE 32
 
-const char* ip = "unknown";
 in_port_t port;
 uint64_t counter = 0;
+char ** addresses = {0};
 
 struct timespec sleep_time = {
 	.tv_sec = 0,
@@ -29,11 +33,26 @@ struct timespec sleep_time = {
 
 void* print_info(void* unused) {
 	for(;;){
-		printf("\e[5;0HUDP Pixelflut\nnc -u %s %d\npixels/s: %6" PRIu64, ip, port, counter*1000000000/((uint64_t)sleep_time.tv_nsec));
+		printf("\e[5;0HUDP Pixelflut\npixels/s: %6" PRIu64, counter*1000000000/((uint64_t)sleep_time.tv_nsec));
+		printf("\nListening on port %d\n", port);
+		for(int i=0; addresses[i] != NULL; ++i) {
+			printf("\t%s\n", addresses[i]);
+		}
 		counter = 0;
 		nanosleep(&sleep_time, NULL);
 	}
 	return NULL;
+}
+
+int is_loopback(struct sockaddr* sa) {
+	if(sa->sa_family == AF_INET) {
+		struct in_addr ia = ((struct sockaddr_in*)sa)->sin_addr;
+		return (ntohl(ia.s_addr) == INADDR_LOOPBACK); // FIXME: byte order issue
+	} else if (sa->sa_family == AF_INET6) {
+		struct in6_addr ia = ((struct sockaddr_in6*)sa)->sin6_addr;
+		return !memcmp(&ia, &in6addr_loopback, sizeof(struct in6_addr));
+	}
+	return 0;
 }
 
 int main(const int argc, const char const * const * argv) {
@@ -71,6 +90,50 @@ int main(const int argc, const char const * const * argv) {
 	// Zeiger auf den Framebufferspeicher anfordern
 	data = (unsigned int*) mmap(0, width * height * bytespp, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 
+	// IP-Adressen ermitteln
+	struct ifaddrs *ifaddr = NULL, *ifa = NULL;
+	int n, s, family;
+	if (getifaddrs(&ifaddr) == -1) {
+		perror("getifaddrs");
+		return 1;
+	}
+	for (ifa = ifaddr, n=0; ifa != NULL; ifa=ifa->ifa_next){ // zähle Adressen
+		if (ifa->ifa_addr != NULL && !is_loopback(ifa->ifa_addr)) {
+			++n;
+		}
+	}
+	addresses = calloc(n+1, sizeof(void *));
+	if (addresses == NULL) {
+		perror("calloc");
+		return 1;
+	}
+	for (ifa = ifaddr, n=0; ifa != NULL; ifa=ifa->ifa_next) {
+		if (ifa->ifa_addr == NULL) {
+			continue;
+		}
+		family = ifa->ifa_addr->sa_family;
+		if ((family == AF_INET || family == AF_INET6) && !is_loopback(ifa->ifa_addr)) {
+			addresses[n] = calloc(NI_MAXHOST, sizeof(char));
+			if (addresses == NULL) {
+				perror("calloc");
+				return 1;
+			}
+			s = getnameinfo(ifa->ifa_addr,
+				(family == AF_INET) ?
+					sizeof(struct sockaddr_in) :
+					sizeof(struct sockaddr_in6),
+				addresses[n], NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+				if (s != 0) {
+					printf("getnameinfo() failed: %s\n", gai_strerror(s));
+					return 1;
+				}
+			strtok(addresses[n], "%");
+			n++;
+		}
+	}
+	freeifaddrs(ifaddr);
+
+
 	const int udpsock = socket(AF_INET6, SOCK_DGRAM, 0);
 	struct sockaddr_in6 my_addr = {
 		.sin6_family = AF_INET6,
@@ -79,6 +142,7 @@ int main(const int argc, const char const * const * argv) {
 	};
 	if(0 != bind(udpsock, (struct sockaddr*)&my_addr, sizeof(my_addr))) {
 		perror("Could not bind");
+		return 1;
 	}
 	// TODO: getifaddr() benutzen
 	pthread_t print_info_thread;
